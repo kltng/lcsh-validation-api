@@ -1,4 +1,4 @@
-# LCSH API
+# LCSH VALIDATION API
 
 A FastAPI-based API service that provides Library of Congress Subject Headings (LCSH) recommendations based on input keywords. The service scrapes the Library of Congress website, performs similarity comparisons, and returns the most relevant LCSH terms.
 
