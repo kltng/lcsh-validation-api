@@ -13,6 +13,7 @@ Features:
     - Input validation using Pydantic models
     - Configurable number of recommendations
     - Detailed error handling
+    - Rate limiting protection
     - Automatic API documentation (available at /docs)
 
 Example Usage:
@@ -21,13 +22,21 @@ Example Usage:
          -d '{"terms": ["World War II", "Pacific Theater"]}'
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List
+from typing import List, Dict
 import uvicorn
+import time
+from datetime import datetime, timedelta
+import logging
 
 from scraper import LCSHScraper
 from similarity import SimilarityEngine
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Initialize FastAPI application with metadata
 app = FastAPI(
@@ -35,6 +44,71 @@ app = FastAPI(
     description="API for Library of Congress Subject Headings recommendations",
     version="1.0.0"
 )
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
+
+class RateLimiter:
+    """
+    Simple in-memory rate limiter to protect the API from too frequent requests.
+    
+    Attributes:
+        requests (Dict): Dictionary storing request timestamps for each client
+        rate_limit (int): Maximum number of requests allowed per time window
+        time_window (int): Time window in seconds
+    """
+    def __init__(self, rate_limit: int = 10, time_window: int = 60):
+        """
+        Initialize rate limiter with configurable limits.
+        
+        Args:
+            rate_limit (int): Maximum requests allowed per time window
+            time_window (int): Time window in seconds
+        """
+        self.requests: Dict[str, List[datetime]] = {}
+        self.rate_limit = rate_limit
+        self.time_window = time_window
+
+    def is_allowed(self, client_id: str) -> bool:
+        """
+        Check if a request from the client is allowed.
+        
+        Args:
+            client_id (str): Identifier for the client (e.g., IP address)
+            
+        Returns:
+            bool: True if request is allowed, False otherwise
+        """
+        now = datetime.now()
+        
+        # Initialize client's request history if not exists
+        if client_id not in self.requests:
+            self.requests[client_id] = []
+        
+        # Remove old requests outside the time window
+        self.requests[client_id] = [
+            req_time for req_time in self.requests[client_id]
+            if now - req_time < timedelta(seconds=self.time_window)
+        ]
+        
+        # Check if client has exceeded rate limit
+        if len(self.requests[client_id]) >= self.rate_limit:
+            return False
+        
+        # Add current request timestamp
+        self.requests[client_id].append(now)
+        return True
+
+# Initialize components
+scraper = LCSHScraper()
+similarity_engine = SimilarityEngine()
+rate_limiter = RateLimiter(rate_limit=10, time_window=60)  # 10 requests per minute
 
 class RecommendRequest(BaseModel):
     """
@@ -71,23 +145,40 @@ class RecommendResponse(BaseModel):
     """
     recommendations: List[Recommendation]
 
-# Initialize components
-scraper = LCSHScraper()
-similarity_engine = SimilarityEngine()
+async def check_rate_limit(request: Request):
+    """
+    Dependency to check rate limit before processing request.
+    
+    Args:
+        request (Request): FastAPI request object
+        
+    Raises:
+        HTTPException: If rate limit is exceeded
+    """
+    client_id = request.client.host
+    if not rate_limiter.is_allowed(client_id):
+        logger.warning(f"Rate limit exceeded for client: {client_id}")
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests. Please try again later."
+        )
 
 @app.post("/recommend", response_model=RecommendResponse)
-async def recommend(request: RecommendRequest):
+async def recommend(request: Request, req: RecommendRequest, rate_check=Depends(check_rate_limit)):
     """
     Endpoint to get LCSH recommendations based on input terms.
     
     This endpoint performs the following steps:
     1. Validates the input terms
-    2. Searches the LOC website for candidate terms
-    3. Computes similarity scores between input and candidates
-    4. Returns the most similar terms as recommendations
+    2. Checks rate limiting
+    3. Searches the LOC website for candidate terms
+    4. Computes similarity scores between input and candidates
+    5. Returns the most similar terms as recommendations
 
     Args:
-        request (RecommendRequest): The request object containing search terms
+        request (Request): FastAPI request object
+        req (RecommendRequest): The request object containing search terms
+        rate_check: Dependency injection for rate limiting
 
     Returns:
         RecommendResponse: Object containing list of recommendations, each with:
@@ -99,6 +190,7 @@ async def recommend(request: RecommendRequest):
     Raises:
         HTTPException(400): If no terms are provided in the request
         HTTPException(404): If no LCSH terms are found for the provided terms
+        HTTPException(429): If rate limit is exceeded
 
     Example:
         Request:
@@ -119,12 +211,15 @@ async def recommend(request: RecommendRequest):
             ]
         }
     """
-    if not request.terms:
+    if not req.terms:
         raise HTTPException(status_code=400, detail="No terms provided")
+    
+    # Log request
+    logger.info(f"Processing request from {request.client.host} with terms: {req.terms}")
     
     # Collect candidates from all terms
     all_candidates = []
-    for term in request.terms:
+    for term in req.terms:
         candidates = scraper.search_terms(term)
         all_candidates.extend(candidates)
     
@@ -136,11 +231,12 @@ async def recommend(request: RecommendRequest):
     
     # Compute similarities and get top recommendations
     recommendations = similarity_engine.compute_similarities(
-        request.terms,
+        req.terms,
         all_candidates,
         top_k=10
     )
     
+    logger.info(f"Returning {len(recommendations)} recommendations")
     return RecommendResponse(recommendations=recommendations)
 
 if __name__ == "__main__":
