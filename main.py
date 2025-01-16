@@ -17,19 +17,27 @@ Features:
     - Automatic API documentation (available at /docs)
 
 Example Usage:
+    # Multiple terms (recommended format)
     curl -X POST "http://localhost:8000/recommend" \\
          -H "Content-Type: application/json" \\
-         -d '{"terms": ["World War II", "Pacific Theater"]}'
+         -d '{"terms": ["Digital humanities", "Data modeling"]}'
+
+    # Single term
+    curl -X POST "http://localhost:8000/recommend" \\
+         -H "Content-Type: application/json" \\
+         -d '{"terms": "Digital humanities"}'
 """
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Dict
+from pydantic import BaseModel, validator
+from typing import List, Dict, Union
 import uvicorn
 import time
 from datetime import datetime, timedelta
 import logging
+import ast
+import json
 
 from scraper import LCSHScraper
 from similarity import SimilarityEngine
@@ -115,10 +123,36 @@ class RecommendRequest(BaseModel):
     Pydantic model for the recommendation request payload.
     
     Attributes:
-        terms (List[str]): List of search terms to find LCSH recommendations for.
-            Example: ["China--History--Republic, 1912-1949"]
+        terms (Union[List[str], str]): Search terms to find LCSH recommendations for.
+            Can be either:
+            1. A list of strings (recommended):
+               {"terms": ["Digital humanities", "Data modeling"]}
+            2. A single string:
+               {"terms": "Digital humanities"}
     """
-    terms: List[str]
+    terms: Union[List[str], str]
+
+    @validator('terms')
+    def validate_terms(cls, v):
+        """
+        Validate and convert terms input to proper format.
+        Handles both list and string inputs.
+        
+        For GenAI agents and programmatic access, use a proper JSON array:
+        {"terms": ["term1", "term2"]}
+        """
+        if isinstance(v, str):
+            # Try to parse as JSON first
+            try:
+                parsed = json.loads(v)
+                if isinstance(parsed, list):
+                    return parsed
+            except json.JSONDecodeError:
+                # If it's a single string, wrap it in a list
+                return [v]
+        elif isinstance(v, list):
+            return v
+        raise ValueError("Terms must be either a list of strings or a single string")
 
 class Recommendation(BaseModel):
     """
@@ -192,19 +226,24 @@ async def recommend(request: Request, req: RecommendRequest, rate_check=Depends(
         HTTPException(404): If no LCSH terms are found for the provided terms
         HTTPException(429): If rate limit is exceeded
 
-    Example:
-        Request:
-        {
-            "terms": ["China--History--Republic, 1912-1949"]
-        }
+    Example Request Formats:
+        1. Multiple terms (recommended for GenAI agents):
+           {
+               "terms": ["Digital humanities", "Data modeling"]
+           }
 
-        Response:
+        2. Single term:
+           {
+               "terms": "Digital humanities"
+           }
+
+    Example Response:
         {
             "recommendations": [
                 {
-                    "term": "China--History--Republic, 1912-1949",
-                    "id": "sh85024107",
-                    "url": "https://id.loc.gov/authorities/subjects/sh85024107",
+                    "term": "Digital humanities",
+                    "id": "sh85124003",
+                    "url": "https://id.loc.gov/authorities/subjects/sh85124003",
                     "similarity_score": 1.0
                 },
                 ...
