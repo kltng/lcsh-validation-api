@@ -1,14 +1,17 @@
-# Use Python 3.9 slim image as base
-FROM python:3.9-slim
+# Use Python 3.10 slim image as base (to match requires-python in pyproject.toml)
+FROM python:3.10-slim
 
 # Set working directory
 WORKDIR /app
 
-# Copy requirements first to leverage Docker cache
-COPY requirements.txt .
+# Install uv package manager
+RUN pip install --no-cache-dir uv
 
-# Install dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy dependency files first to leverage Docker cache
+COPY pyproject.toml uv.lock ./
+
+# Install dependencies using uv
+RUN uv pip install --system .
 
 # Copy the rest of the application
 COPY . .
