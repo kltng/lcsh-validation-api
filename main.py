@@ -14,6 +14,7 @@ Features:
     - Configurable number of recommendations
     - Detailed error handling
     - Rate limiting protection
+    - OpenAPI documentation (available at /docs and /openapi.json)
     - Automatic API documentation (available at /docs)
 
 Example Usage:
@@ -26,12 +27,17 @@ Example Usage:
     curl -X POST "http://localhost:8000/recommend" \\
          -H "Content-Type: application/json" \\
          -d '{"terms": "Digital humanities"}'
+    
+    # Get OpenAPI schema
+    curl -X GET "http://localhost:8000/openapi.json" > openapi.json
 """
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel, validator
-from typing import List, Dict, Union
+from typing import List, Dict, Union, Any, Optional
 import uvicorn
 import time
 from datetime import datetime, timedelta
@@ -50,7 +56,10 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="LCSH API",
     description="API for Library of Congress Subject Headings recommendations",
-    version="1.0.0"
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json"
 )
 
 # Add CORS middleware
@@ -61,6 +70,86 @@ app.add_middleware(
     allow_methods=["*"],  # Allows all methods
     allow_headers=["*"],  # Allows all headers
 )
+
+# Custom OpenAPI schema with additional information
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    
+    openapi_schema = get_openapi(
+        title="LCSH Validation API",
+        version="1.0.0",
+        description="API for Library of Congress Subject Headings recommendations and validation",
+        routes=app.routes,
+    )
+    
+    # Add additional information
+    openapi_schema["info"]["x-logo"] = {
+        "url": "https://www.loc.gov/static/images/logo-loc-new-branding.svg"
+    }
+    
+    openapi_schema["info"]["contact"] = {
+        "name": "LCSH Validation API Support",
+        "url": "https://github.com/kltng/lcsh-validation-api",
+        "email": "support@example.com"  # Replace with actual support email
+    }
+    
+    # Add examples to the schema
+    for path in openapi_schema["paths"]:
+        if path == "/recommend":
+            for method in openapi_schema["paths"][path]:
+                if method == "post":
+                    # Add request examples
+                    openapi_schema["paths"][path][method]["requestBody"]["content"]["application/json"]["examples"] = {
+                        "multiple_terms": {
+                            "summary": "Multiple terms (recommended)",
+                            "value": {"terms": ["Digital humanities", "Data modeling"]}
+                        },
+                        "single_term": {
+                            "summary": "Single term",
+                            "value": {"terms": "Digital humanities"}
+                        }
+                    }
+                    
+                    # Add response examples
+                    openapi_schema["paths"][path][method]["responses"]["200"]["content"]["application/json"]["examples"] = {
+                        "successful_response": {
+                            "summary": "Successful response",
+                            "value": {
+                                "recommendations": [
+                                    {
+                                        "term": "Digital humanities",
+                                        "id": "sh85124003",
+                                        "url": "https://id.loc.gov/authorities/subjects/sh85124003",
+                                        "similarity_score": 1.0
+                                    },
+                                    {
+                                        "term": "Humanities--Data processing",
+                                        "id": "sh85062987",
+                                        "url": "https://id.loc.gov/authorities/subjects/sh85062987",
+                                        "similarity_score": 0.85
+                                    }
+                                ]
+                            }
+                        }
+                    }
+    
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+app.openapi = custom_openapi
+
+# Create a dedicated endpoint for OpenAPI schema
+@app.get("/openapi.json", include_in_schema=False)
+async def get_openapi_schema():
+    """
+    Get the OpenAPI schema as JSON.
+    
+    This endpoint returns the complete OpenAPI schema for the API,
+    which can be used with tools like Swagger UI, Postman, or
+    for generating client libraries.
+    """
+    return JSONResponse(content=app.openapi())
 
 class RateLimiter:
     """
