@@ -6,10 +6,11 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - MAX_WORKERS=4  # Number of Uvicorn workers
+      - MAX_WORKERS=4 # Number of Uvicorn workers
+      - API_KEYS=${API_KEYS:-test_key} # API keys for authentication
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/docs" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -22,4 +23,4 @@ services:
           memory: 1G
         reservations:
           cpus: '0.5'
-          memory: 512M 
+          memory: 512M

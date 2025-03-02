@@ -16,6 +16,9 @@ RUN uv pip install --system .
 # Copy the rest of the application
 COPY . .
 
+# Set environment variables
+ENV API_KEYS="test_key"
+
 # Expose the port the app runs on
 EXPOSE 8000
 

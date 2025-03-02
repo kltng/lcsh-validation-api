@@ -14,6 +14,7 @@ Features:
     - Configurable number of recommendations
     - Detailed error handling
     - Rate limiting protection
+    - API key authentication
     - OpenAPI documentation (available at /docs and /openapi.json)
     - Automatic API documentation (available at /docs)
 
@@ -21,21 +22,24 @@ Example Usage:
     # Multiple terms (recommended format)
     curl -X POST "http://localhost:8000/recommend" \\
          -H "Content-Type: application/json" \\
+         -H "X-API-Key: your_api_key_here" \\
          -d '{"terms": ["Digital humanities", "Data modeling"]}'
 
     # Single term
     curl -X POST "http://localhost:8000/recommend" \\
          -H "Content-Type: application/json" \\
+         -H "X-API-Key: your_api_key_here" \\
          -d '{"terms": "Digital humanities"}'
     
     # Get OpenAPI schema
     curl -X GET "http://localhost:8000/openapi.json" > openapi.json
 """
 
-from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi import FastAPI, HTTPException, Request, Depends, Security, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.openapi.utils import get_openapi
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, validator
 from typing import List, Dict, Union, Any, Optional
 import uvicorn
@@ -44,13 +48,25 @@ from datetime import datetime, timedelta
 import logging
 import ast
 import json
+import os
+from dotenv import load_dotenv
 
 from scraper import LCSHScraper
 from similarity import SimilarityEngine
 
+# Load environment variables
+load_dotenv()
+
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# API key configuration
+API_KEY_NAME = "X-API-Key"
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+
+# Get API keys from environment variables or use a default for development
+API_KEYS = os.getenv("API_KEYS", "test_key").split(",")
 
 # Initialize FastAPI application with metadata
 app = FastAPI(
@@ -93,6 +109,19 @@ def custom_openapi():
         "url": "https://github.com/kltng/lcsh-validation-api",
         "email": "support@example.com"  # Replace with actual support email
     }
+    
+    # Add security scheme for API key
+    openapi_schema["components"] = openapi_schema.get("components", {})
+    openapi_schema["components"]["securitySchemes"] = {
+        "ApiKeyAuth": {
+            "type": "apiKey",
+            "in": "header",
+            "name": API_KEY_NAME
+        }
+    }
+    
+    # Apply security requirement to all endpoints
+    openapi_schema["security"] = [{"ApiKeyAuth": []}]
     
     # Add examples to the schema
     for path in openapi_schema["paths"]:
@@ -150,6 +179,35 @@ async def get_openapi_schema():
     for generating client libraries.
     """
     return JSONResponse(content=app.openapi())
+
+async def get_api_key(api_key_header: str = Security(api_key_header)):
+    """
+    Dependency to validate API key.
+    
+    Args:
+        api_key_header (str): API key from request header
+        
+    Returns:
+        str: Validated API key
+        
+    Raises:
+        HTTPException: If API key is missing or invalid
+    """
+    if api_key_header is None:
+        logger.warning("API key missing in request")
+        raise HTTPException(
+            status_code=401,
+            detail="API key is missing. Please provide a valid API key in the X-API-Key header."
+        )
+    
+    if api_key_header not in API_KEYS:
+        logger.warning(f"Invalid API key: {api_key_header[:5]}...")
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid API key. Please provide a valid API key."
+        )
+    
+    return api_key_header
 
 class RateLimiter:
     """
@@ -287,20 +345,27 @@ async def check_rate_limit(request: Request):
         )
 
 @app.post("/recommend", response_model=RecommendResponse)
-async def recommend(request: Request, req: RecommendRequest, rate_check=Depends(check_rate_limit)):
+async def recommend(
+    request: Request, 
+    req: RecommendRequest, 
+    api_key: str = Depends(get_api_key),
+    rate_check=Depends(check_rate_limit)
+):
     """
     Endpoint to get LCSH recommendations based on input terms.
     
     This endpoint performs the following steps:
-    1. Validates the input terms
-    2. Checks rate limiting
-    3. Searches the LOC website for candidate terms
-    4. Computes similarity scores between input and candidates
-    5. Returns the most similar terms as recommendations
+    1. Validates the API key
+    2. Validates the input terms
+    3. Checks rate limiting
+    4. Searches the LOC website for candidate terms
+    5. Computes similarity scores between input and candidates
+    6. Returns the most similar terms as recommendations
 
     Args:
         request (Request): FastAPI request object
         req (RecommendRequest): The request object containing search terms
+        api_key (str): API key for authentication
         rate_check: Dependency injection for rate limiting
 
     Returns:
@@ -312,6 +377,7 @@ async def recommend(request: Request, req: RecommendRequest, rate_check=Depends(
 
     Raises:
         HTTPException(400): If no terms are provided in the request
+        HTTPException(401): If API key is missing or invalid
         HTTPException(404): If no LCSH terms are found for the provided terms
         HTTPException(429): If rate limit is exceeded
 
@@ -343,7 +409,7 @@ async def recommend(request: Request, req: RecommendRequest, rate_check=Depends(
         raise HTTPException(status_code=400, detail="No terms provided")
     
     # Log request
-    logger.info(f"Processing request from {request.client.host} with terms: {req.terms}")
+    logger.info(f"Processing authenticated request from {request.client.host} with terms: {req.terms}")
     
     # Collect candidates from all terms
     all_candidates = []
