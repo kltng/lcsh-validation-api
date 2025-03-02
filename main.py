@@ -427,7 +427,7 @@ async def recommend(
     recommendations = similarity_engine.compute_similarities(
         req.terms,
         all_candidates,
-        top_k=10
+        top_k=20
     )
     
     logger.info(f"Returning {len(recommendations)} recommendations")
