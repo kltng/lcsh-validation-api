@@ -111,21 +111,26 @@ class LCSHScraper:
             # Parse the JSON response
             data = response.json()
             
-            if data and len(data) >= 4:
-                terms = data[1]
-                uris = data[3]
-                
-                logger.info(f"Found {len(terms)} terms and {len(uris)} URIs in the response")
+            if data and "hits" in data and isinstance(data["hits"], list):
+                hits = data["hits"]
+                logger.info(f"Found {len(hits)} hits in the response")
 
-                for term, uri in zip(terms, uris):
-                    # Extract ID from URI
-                    lcsh_id = uri.split('/')[-1]
-                    
-                    results.append({
-                        "term": term,
-                        "id": lcsh_id,
-                        "url": uri
-                    })
+                for hit in hits:
+                    term = hit.get("suggestLabel") or hit.get("aLabel") # Use suggestLabel, fallback to aLabel
+                    uri = hit.get("uri")
+
+                    if term and uri:
+                        # Extract ID from URI
+                        lcsh_id = uri.split('/')[-1]
+                        results.append({
+                            "term": term,
+                            "id": lcsh_id,
+                            "url": uri
+                        })
+                    else:
+                        logger.warning(f"Skipping hit due to missing term or URI: {hit}")
+            else:
+                logger.warning(f"No 'hits' found in the response or 'hits' is not a list. Response data: {data}")
             
         except httpx.HTTPError as e:
             logger.error(f"Error fetching results: {str(e)}")
@@ -142,4 +147,4 @@ class LCSHScraper:
         This method is automatically called when the scraper instance is destroyed,
         ensuring that network resources are properly released.
         """
-        self.client.close() 
+        self.client.close()
