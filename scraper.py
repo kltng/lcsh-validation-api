@@ -47,10 +47,11 @@ class LCSHScraper:
         Sets up the base URL for searches and initializes the HTTP client with
         appropriate timeout settings. Also initializes rate limiting parameters.
         """
-        self.base_url = "https://id.loc.gov/search/?q={keyword}&q=cs:http://id.loc.gov/authorities/subjects"
+        self.base_url = "https://id.loc.gov/authorities/subjects/suggest2"
         self.last_request_time = 0
         self.min_request_interval = 1  # Minimum time between requests in seconds
-        self.client = httpx.Client(timeout=30.0)
+        headers = {"User-Agent": "MyLCSHClient/1.0"}
+        self.client = httpx.Client(timeout=30.0, headers=headers)
 
     def _wait_for_rate_limit(self):
         """
@@ -92,52 +93,44 @@ class LCSHScraper:
         """
         results = []
         
-        # Construct search URL with the exact format
-        encoded_query = quote(query)
-        search_url = self.base_url.format(keyword=encoded_query)
+        params = {
+            "q": query,
+            "searchtype": "keyword"
+        }
         
         logger.info(f"Searching for term: {query}")
-        logger.info(f"Using URL: {search_url}")
+        logger.info(f"Using URL: {self.base_url} with params: {params}")
         
         try:
             self._wait_for_rate_limit()
-            response = self.client.get(search_url)
+            response = self.client.get(self.base_url, params=params)
             response.raise_for_status()
             
             logger.info(f"Response status code: {response.status_code}")
             
-            # Parse the HTML response
-            soup = BeautifulSoup(response.text, 'html.parser')
+            # Parse the JSON response
+            data = response.json()
             
-            # Find the results table
-            table = soup.find('table', class_='id-std')
-            if table:
-                # Find all result groups
-                entries = table.find_all('tbody', class_='tbody-group')
-                logger.info(f"Found {len(entries)} entries in the response")
-                
-                for entry in entries:
-                    # Find the main row in each group
-                    row = entry.find('tr')
-                    if row:
-                        # Get the link from the second cell (td)
-                        link_cell = row.find_all('td')[1]
-                        link = link_cell.find('a')
-                        if link:
-                            term = link.text.strip()
-                            href = link.get('href', '')
-                            
-                            # Get the ID from the last cell
-                            id_cell = row.find_all('td')[-1]
-                            lcsh_id = id_cell.text.strip()
-                            
-                            if term and lcsh_id:
-                                full_url = f"https://id.loc.gov{href}" if href.startswith('/') else href
-                                results.append({
-                                    "term": term,
-                                    "id": lcsh_id,
-                                    "url": full_url
-                                })
+            if data and "hits" in data and isinstance(data["hits"], list):
+                hits = data["hits"]
+                logger.info(f"Found {len(hits)} hits in the response")
+
+                for hit in hits:
+                    term = hit.get("suggestLabel") or hit.get("aLabel") # Use suggestLabel, fallback to aLabel
+                    uri = hit.get("uri")
+
+                    if term and uri:
+                        # Extract ID from URI
+                        lcsh_id = uri.split('/')[-1]
+                        results.append({
+                            "term": term,
+                            "id": lcsh_id,
+                            "url": uri
+                        })
+                    else:
+                        logger.warning(f"Skipping hit due to missing term or URI: {hit}")
+            else:
+                logger.warning(f"No 'hits' found in the response or 'hits' is not a list. Response data: {data}")
             
         except httpx.HTTPError as e:
             logger.error(f"Error fetching results: {str(e)}")
@@ -154,4 +147,4 @@ class LCSHScraper:
         This method is automatically called when the scraper instance is destroyed,
         ensuring that network resources are properly released.
         """
-        self.client.close() 
+        self.client.close()

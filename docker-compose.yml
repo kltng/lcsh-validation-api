@@ -24,3 +24,4 @@ services:
         reservations:
           cpus: '0.5'
           memory: 512M
+ 
