@@ -49,8 +49,9 @@ class LCSHScraper:
         """
         self.base_url = "https://id.loc.gov/authorities/subjects/suggest2"
         self.last_request_time = 0
-        self.min_request_interval = 1  # Minimum time between requests in seconds
-        headers = {"User-Agent": "MyLCSHClient/1.0"}
+        self.min_request_interval = 3  # Respect LOC robots.txt crawl-delay
+        self.max_retries = 2
+        headers = {"User-Agent": "LCSH-Validation-API/1.0 (https://github.com/kltng/lcsh-validation-api)"}
         self.client = httpx.Client(timeout=30.0, headers=headers)
 
     def _wait_for_rate_limit(self):
@@ -66,6 +67,19 @@ class LCSHScraper:
         if time_since_last_request < self.min_request_interval:
             time.sleep(self.min_request_interval - time_since_last_request)
         self.last_request_time = time.time()
+
+    def _request_with_retry(self, params):
+        """Make a request with retry on 429/503."""
+        for attempt in range(self.max_retries + 1):
+            response = self.client.get(self.base_url, params=params)
+            if response.status_code in (429, 503) and attempt < self.max_retries:
+                delay = 2 ** (attempt + 1)
+                logger.warning(f"LOC API returned {response.status_code}, retrying in {delay}s...")
+                time.sleep(delay)
+                continue
+            response.raise_for_status()
+            return response
+        return response
 
     def search_terms(self, query: str, max_pages: int = 3) -> List[Dict[str, str]]:
         """
@@ -103,8 +117,7 @@ class LCSHScraper:
         
         try:
             self._wait_for_rate_limit()
-            response = self.client.get(self.base_url, params=params)
-            response.raise_for_status()
+            response = self._request_with_retry(params)
             
             logger.info(f"Response status code: {response.status_code}")
             
@@ -132,6 +145,11 @@ class LCSHScraper:
             else:
                 logger.warning(f"No 'hits' found in the response or 'hits' is not a list. Response data: {data}")
             
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (429, 503):
+                logger.warning(f"LOC API returned {e.response.status_code}, retries exhausted")
+            else:
+                logger.error(f"Error fetching results: {str(e)}")
         except httpx.HTTPError as e:
             logger.error(f"Error fetching results: {str(e)}")
         except Exception as e:
